@@ -92,6 +92,38 @@ export function createSupabaseBackend(url, anonKey) {
       return { house, role: res.role };
     },
 
+    // ---------- member roles (the rules live in the SQL functions in supabase/schema.sql) ----------
+    async setMemberRole(houseId, userId, role) {
+      must(await sb.rpc('set_member_role', { p_house: houseId, p_user: userId, p_role: role }));
+      return this.getHouse(houseId);
+    },
+    async removeMember(houseId, userId) {
+      must(await sb.rpc('remove_member', { p_house: houseId, p_user: userId }));
+      return this.getHouse(houseId);
+    },
+    async leaveHouse(houseId) {
+      must(await sb.rpc('leave_house', { p_house: houseId }));
+    },
+
+    // ---------- visiting friends' houses (the rules live in the SQL functions) ----------
+    async listFriendHouses() {
+      const rows = must(await sb.rpc('list_friend_houses')) || [];
+      return rows.map((r) => ({ id: r.house_id, name: r.name, type: r.type, vibe: r.vibe, ownerId: r.owner_id, ownerName: r.owner_name }));
+    },
+    async visitHouse(houseId) {
+      const res = must(await sb.rpc('visit_house', { p_house: houseId }));
+      return { house: await this.getHouse(res.house_id), role: res.role };
+    },
+
+    // ---------- friends (the rules live in the SQL functions in supabase/schema.sql) ----------
+    async sendFriendRequest(username) { return must(await sb.rpc('send_friend_request', { p_username: username })); }, // 'sent' | 'accepted'
+    async respondFriendRequest(userId, accept) { must(await sb.rpc('respond_friend_request', { p_user: userId, p_accept: !!accept })); },
+    async removeFriend(userId) { must(await sb.rpc('remove_friend', { p_user: userId })); },
+    async listFriends() {
+      const rows = must(await sb.rpc('list_friends')) || [];
+      return rows.map((r) => ({ id: r.user_id, username: r.username, avatar: r.avatar || null, status: r.status }));
+    },
+
     // ---------- chat ----------
     async listMessages(houseId, limit = 60) {
       const rows = must(await sb.from('messages').select('*').eq('house_id', houseId).order('id', { ascending: false }).limit(limit));

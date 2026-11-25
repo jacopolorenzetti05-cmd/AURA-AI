@@ -1,0 +1,42 @@
+/* Game look + small animations for Connect Four and Tic-Tac-Toe. Owner: Activities.
+   (Base board styles live in src/styles.css, which the lead owns. These only add on top.) */
+
+/* Big turn banner: pink and gently pulsing when it's YOUR turn */
+.gm-banner { padding: .45em 1em; border-radius: 999px; background: #fff; box-shadow: inset 0 0 0 2px var(--line); }
+.gm-banner.mine { background: var(--accent); color: #fff; box-shadow: none; animation: gm-pulse 1.4s ease-in-out infinite; }
+.gm-banner.done { background: #fff3c4; box-shadow: none; animation: gm-pop .35s ease-out; }
+@keyframes gm-pulse { 50% { transform: scale(1.05); } }
+
+/* The two players, with their piece; the one whose turn it is is highlighted */
+.gm-players { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+.gm-player { display: flex; align-items: center; gap: 6px; padding: .3em .8em; border-radius: 999px; background: #fff; border: 2px solid var(--line); font-weight: 600; font-size: .9rem; opacity: .6; transition: opacity .2s, border-color .2s; }
+.gm-player.on { opacity: 1; border-color: var(--accent-2); }
+.gm-player.won { opacity: 1; border-color: #f4b400; background: #fff3c4; }
+.gm-piece { font-size: 1.1rem; }
+
+/* Connect Four: the newest disc falls from above the board and bounces a little */
+.c4 { overflow: hidden; }
+.c4-cell i.gm-drop { animation: gm-fall .45s cubic-bezier(.3, 1.3, .6, 1) both; }
+.gm-r1 { --fall: -130%; } .gm-r2 { --fall: -260%; } .gm-r3 { --fall: -390%; }
+.gm-r4 { --fall: -520%; } .gm-r5 { --fall: -650%; } .gm-r6 { --fall: -780%; }
+@keyframes gm-fall { from { transform: translateY(var(--fall)); } }
+
+/* Tic-Tac-Toe: the newest mark pops in */
+.gm-pop { display: inline-block; animation: gm-pop .3s ease-out both; }
+@keyframes gm-pop { from { transform: scale(.2); opacity: 0; } 70% { transform: scale(1.2); } }
+
+/* Winning line glows */
+.c4-cell.gm-win i { box-shadow: 0 0 0 3px #fff, 0 0 12px 4px #fff; animation: gm-glow 1s ease-in-out infinite alternate; }
+.ttt-cell.gm-win { background: #fff3c4; box-shadow: inset 0 0 0 3px #f4b400; }
+@keyframes gm-glow { to { filter: brightness(1.25); } }
+
+/* Rematch button stands out */
+.gm-rematch { font-size: 1.05rem; padding-inline: 1.4em; }
+
+@media (prefers-reduced-motion: reduce) {
+  .gm-banner.mine, .c4-cell i.gm-drop, .gm-pop, .c4-cell.gm-win i { animation: none; }
+}
+
+/* Keep the Tic-Tac-Toe board inside a 390px phone screen (cells were growing too wide) */
+.ttt { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.ttt-cell { padding: 0; min-width: 0; }

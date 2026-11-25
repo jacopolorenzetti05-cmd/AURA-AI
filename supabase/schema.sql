@@ -145,3 +145,182 @@ drop policy if exists "points read" on points;
 create policy "points read" on points for select using (is_member(house_id));
 drop policy if exists "points write" on points;
 create policy "points write" on points for insert with check (is_member(house_id) and user_id = auth.uid());
+
+-- ---------- API access ----------
+-- New Supabase projects don't let the API touch new tables by default, so give signed-in
+-- players access. Row level security above still decides which rows each player can see.
+-- (Not-signed-in visitors get no table access on purpose.)
+grant usage on schema public to anon, authenticated;
+grant select, insert, update, delete on all tables in schema public to authenticated;
+grant usage, select on all sequences in schema public to authenticated;
+grant execute on all functions in schema public to authenticated;
+
+-- ---------- keep-alive ----------
+-- A harmless function the weekly keep-alive workflow calls so the free project never pauses.
+create or replace function ping() returns int language sql stable as $$ select 1 $$;
+grant execute on function ping() to anon, authenticated;
+
+-- ---------- member roles ----------
+-- Change a member's role. Housemates may promote guests; only the owner may demote a housemate.
+-- The owner's role never changes.
+create or replace function set_member_role(p_house uuid, p_user uuid, p_role text)
+returns void language plpgsql security definer set search_path = public as $$
+declare me text; target text;
+begin
+  if auth.uid() is null then raise exception 'Not signed in'; end if;
+  if p_role not in ('housemate', 'guest') then raise exception 'Role must be housemate or guest'; end if;
+  select role into me from house_members where house_id = p_house and user_id = auth.uid();
+  select role into target from house_members where house_id = p_house and user_id = p_user;
+  if me is null or me = 'guest' then raise exception 'Only housemates can change roles'; end if;
+  if target is null then raise exception 'That person is not in this house'; end if;
+  if target = 'owner' then raise exception 'The owner''s role cannot be changed'; end if;
+  if target = 'housemate' and p_role = 'guest' and me <> 'owner' then raise exception 'Only the owner can make a housemate a guest'; end if;
+  update house_members set role = p_role where house_id = p_house and user_id = p_user;
+end; $$;
+
+-- Remove someone from the house. Housemates may remove guests; only the owner may remove housemates.
+create or replace function remove_member(p_house uuid, p_user uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare me text; target text;
+begin
+  if auth.uid() is null then raise exception 'Not signed in'; end if;
+  if p_user = auth.uid() then raise exception 'Use "Leave house" to leave yourself'; end if;
+  select role into me from house_members where house_id = p_house and user_id = auth.uid();
+  select role into target from house_members where house_id = p_house and user_id = p_user;
+  if me is null or me = 'guest' then raise exception 'Only housemates can remove people'; end if;
+  if target is null then raise exception 'That person is not in this house'; end if;
+  if target = 'owner' then raise exception 'The owner cannot be removed'; end if;
+  if target = 'housemate' and me <> 'owner' then raise exception 'Only the owner can remove a housemate'; end if;
+  delete from house_members where house_id = p_house and user_id = p_user;
+end; $$;
+
+-- Leave a house. The last owner cannot leave (the house would have nobody in charge).
+create or replace function leave_house(p_house uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare me text; other_owners int;
+begin
+  if auth.uid() is null then raise exception 'Not signed in'; end if;
+  select role into me from house_members where house_id = p_house and user_id = auth.uid();
+  if me is null then raise exception 'You are not in this house'; end if;
+  if me = 'owner' then
+    select count(*) into other_owners from house_members where house_id = p_house and role = 'owner' and user_id <> auth.uid();
+    if other_owners = 0 then raise exception 'The owner cannot leave their own house'; end if;
+  end if;
+  delete from house_members where house_id = p_house and user_id = auth.uid();
+end; $$;
+
+grant execute on function set_member_role(uuid, uuid, text), remove_member(uuid, uuid), leave_house(uuid) to authenticated;
+
+-- ---------- friends ----------
+-- A friendship is one row: requester asked, addressee answers. 'pending' until accepted.
+-- People change it only through the functions below (so nobody can fake a friendship).
+create table if not exists friends (
+  requester uuid not null references auth.users on delete cascade,
+  addressee uuid not null references auth.users on delete cascade,
+  status text not null default 'pending' check (status in ('pending', 'accepted')),
+  created_at timestamptz default now(),
+  primary key (requester, addressee),
+  check (requester <> addressee)
+);
+create index if not exists friends_addressee_idx on friends (addressee);
+alter table friends enable row level security;
+drop policy if exists "friends read own" on friends;
+create policy "friends read own" on friends for select using (requester = auth.uid() or addressee = auth.uid());
+grant select on friends to authenticated;
+
+-- Ask someone to be friends by username. If they already asked you, you become friends.
+-- Returns 'sent' or 'accepted'.
+create or replace function send_friend_request(p_username text)
+returns text language plpgsql security definer set search_path = public as $$
+declare other uuid;
+begin
+  if auth.uid() is null then raise exception 'Not signed in'; end if;
+  select id into other from profiles where lower(username) = lower(trim(p_username));
+  if other is null then raise exception 'No player with that username'; end if;
+  if other = auth.uid() then raise exception 'That is you!'; end if;
+  if exists (select 1 from friends where status = 'accepted' and ((requester = auth.uid() and addressee = other) or (requester = other and addressee = auth.uid()))) then
+    raise exception 'You are already friends';
+  end if;
+  if exists (select 1 from friends where requester = auth.uid() and addressee = other) then
+    raise exception 'Request already sent';
+  end if;
+  if exists (select 1 from friends where requester = other and addressee = auth.uid()) then
+    update friends set status = 'accepted' where requester = other and addressee = auth.uid();
+    return 'accepted';
+  end if;
+  insert into friends (requester, addressee) values (auth.uid(), other);
+  return 'sent';
+end; $$;
+
+-- Answer a request someone sent you: accept, or decline (which deletes it).
+create or replace function respond_friend_request(p_user uuid, p_accept boolean)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  if auth.uid() is null then raise exception 'Not signed in'; end if;
+  if not exists (select 1 from friends where requester = p_user and addressee = auth.uid() and status = 'pending') then
+    raise exception 'No request from that person';
+  end if;
+  if p_accept then update friends set status = 'accepted' where requester = p_user and addressee = auth.uid();
+  else delete from friends where requester = p_user and addressee = auth.uid();
+  end if;
+end; $$;
+
+-- Remove a friend, or cancel a request you sent.
+create or replace function remove_friend(p_user uuid)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  if auth.uid() is null then raise exception 'Not signed in'; end if;
+  delete from friends where (requester = auth.uid() and addressee = p_user) or (requester = p_user and addressee = auth.uid());
+end; $$;
+
+-- My friends and requests, with the other person's name and avatar.
+-- status: 'friend', 'incoming' (they asked me) or 'outgoing' (I asked them).
+create or replace function list_friends()
+returns table (user_id uuid, username text, avatar jsonb, status text)
+language sql security definer stable set search_path = public as $$
+  select o.id, o.username, o.avatar,
+    case when f.status = 'accepted' then 'friend' when f.requester = auth.uid() then 'outgoing' else 'incoming' end
+  from friends f
+  join profiles o on o.id = case when f.requester = auth.uid() then f.addressee else f.requester end
+  where f.requester = auth.uid() or f.addressee = auth.uid();
+$$;
+
+grant execute on function send_friend_request(text), respond_friend_request(uuid, boolean), remove_friend(uuid), list_friends() to authenticated;
+
+-- ---------- visiting friends' houses ----------
+-- A house owner can switch on "Friends can visit" (stored as data.friendsCanVisit = true, off by default).
+-- Then accepted friends of the OWNER can see the house in their Friends page and join it as a guest
+-- (guests can look around, chat and play, but not build; the owner can remove them any time).
+
+-- Houses my friends have opened for visits (and that I'm not already in).
+create or replace function list_friend_houses()
+returns table (house_id uuid, name text, type text, vibe text, owner_id uuid, owner_name text)
+language sql security definer stable set search_path = public as $$
+  select h.id, h.name, h.type, h.vibe, h.owner_id, p.username
+  from houses h
+  join profiles p on p.id = h.owner_id
+  where h.data->>'friendsCanVisit' = 'true'
+    and exists (select 1 from friends f where f.status = 'accepted'
+                and ((f.requester = auth.uid() and f.addressee = h.owner_id) or (f.requester = h.owner_id and f.addressee = auth.uid())))
+    and not exists (select 1 from house_members m where m.house_id = h.id and m.user_id = auth.uid());
+$$;
+
+-- Join a friend's open house as a guest. Returns { house_id, role }.
+create or replace function visit_house(p_house uuid)
+returns json language plpgsql security definer set search_path = public as $$
+declare h houses; uname text;
+begin
+  if auth.uid() is null then raise exception 'Not signed in'; end if;
+  select * into h from houses where id = p_house;
+  if h.id is null or coalesce(h.data->>'friendsCanVisit', '') <> 'true' then raise exception 'This house is not open for visits'; end if;
+  if not exists (select 1 from friends f where f.status = 'accepted'
+                 and ((f.requester = auth.uid() and f.addressee = h.owner_id) or (f.requester = h.owner_id and f.addressee = auth.uid()))) then
+    raise exception 'Only friends of the owner can visit';
+  end if;
+  select username into uname from profiles where id = auth.uid();
+  insert into house_members (house_id, user_id, role, name) values (h.id, auth.uid(), 'guest', coalesce(uname, 'visitor'))
+    on conflict (house_id, user_id) do nothing; -- already a member: keep their role
+  return json_build_object('house_id', h.id, 'role', (select role from house_members where house_id = h.id and user_id = auth.uid()));
+end; $$;
+
+grant execute on function list_friend_houses(), visit_house(uuid) to authenticated;

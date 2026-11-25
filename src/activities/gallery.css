@@ -1,0 +1,22 @@
+/* Memory gallery look (captions, dates, months, big view). Owner: Activities.
+   The base .gallery grid lives in src/styles.css (lead); these only add on top. */
+
+.mg-count { align-self: center; }
+.mg-month { margin: 16px 0 0; font-size: .95rem; color: var(--ink-2); }
+.mg-tile { cursor: pointer; transition: transform .15s; }
+.mg-tile:active { transform: scale(.97); }
+.mg-tile figcaption small { display: block; color: var(--ink-2); }
+
+/* the picked photo while writing its caption and date */
+.mg-preview { width: 100%; max-height: 260px; object-fit: contain; border-radius: 12px; background: #f4f1fa; }
+
+/* one photo shown big */
+.mg-big { margin: 10px 0 0; }
+.mg-big img { width: 100%; max-height: 60vh; object-fit: contain; border-radius: 14px; background: #f4f1fa; display: block; }
+.mg-big h3 { margin: 10px 0 2px; }
+
+/* "On this day" memories from past years */
+.mg-otd { background: #fff8e6; }
+.mg-otd h4 { margin: 0 0 6px; }
+.mg-otd .row { cursor: pointer; }
+.mg-otd .thumb { width: 44px; height: 44px; object-fit: cover; border-radius: 10px; }

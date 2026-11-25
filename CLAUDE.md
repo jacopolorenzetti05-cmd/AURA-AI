@@ -38,21 +38,27 @@ perfect-and-unfinished. We go broad first, then deep.
 7. **Before finishing:** run `npm run build` and fix every error. Then add 2-4 lines to
    `docs/LOG.md` (date, area, what changed, what's next).
 
-## Git workflow: forks (do it for the user, explain each step briefly)
+## Team workflow (MANDATORY: read docs/WORKFLOW.md; every Claude follows it)
 
-Each teammate works in their OWN FORK of `tacox2404-sudo/AURA-AI` (the "upstream").
-Only the lead merges into upstream `main`, so nobody can break the live game by accident.
+Everyone (lead included) clones `tacox2404-sudo/AURA-AI` directly and pushes short-lived
+`<area>/<task>` branches to it, so every team can read the others' work. Only the lead merges
+into `main` (a GitHub ruleset enforces it: pull request + green checks, no force pushes).
 
-- First time: the user forks on GitHub, then `git clone <their fork URL>` and
-  `git remote add upstream https://github.com/tacox2404-sudo/AURA-AI.git`.
-- Start every session: `git checkout main && git pull upstream main && git push origin main`,
-  then `git checkout -b <area>/<short-task>` (example: `world/walk-animation`).
-  The area prefix is required: world/, build/, social/, activities/ (lead: core/).
-- Commit small steps with clear messages.
-- Before pushing: `npm run build`, `npm run smoke`, `npm run scope`. All must pass.
-- Finish: `git push -u origin <branch>`, then open a pull request to upstream:
-  `gh pr create --repo tacox2404-sudo/AURA-AI --base main --title "..." --body "..."`
-  (or the "Compare & pull request" button on GitHub). Fill in the PR template.
+1. **Start:** `npm run start -- <area>/<short-task>` (example: `world/walk-animation`). It
+   fixes a fork remote, pulls the latest `main` and creates your branch. Never edit on `main`.
+2. **Build** the feature inside your area's folder, explain it in plain words, test with `npm run dev`.
+3. **Finish:** add 2-4 lines to `docs/LOG.md`, commit, then `npm run ship`. It runs build, scope and
+   smoke, pushes your branch, opens the pull request and turns on auto-merge. Give the user the PR link
+   and a one-line message for the team chat.
+3b. **Then follow it to the end yourself:** run `npm run status` (no login needed) every minute or two.
+   It says ⏳ running, ✅ merged, or ❌ failed. If a check FAILS, fix it on your branch and run
+   `npm run ship` again. When it says MERGED you are done. **Never wait for the Game Director:** a green
+   pull request merges by itself. If status says "GitHub is holding the checks", the user has not accepted
+   the repo invitation yet (https://github.com/tacox2404-sudo/AURA-AI/invitations).
+4. Branches stay short (1-2 days). To read other teams' work: `git pull` (merged) or
+   `git fetch` then `git checkout <their-branch>` (look, don't edit).
+5. Never force-push, never push to `main`, never skip the checks.
+6. Do these steps FOR the user. They should only have to think about the feature.
 
 ## Safety nets (don't fight them)
 
@@ -73,6 +79,7 @@ Only the lead merges into upstream `main`, so nobody can break the live game by 
 - `npm run smoke` plays the game automatically (after a build) and fails on any crash.
   First time only: `npx playwright install chromium`.
 - `npm run scope` checks your branch only changed your area's files.
+- `npm run start -- <area>/<task>` begins a task; `npm run ship` finishes it (checks + push + PR + auto-merge); `npm run status` follows your pull request until it is merged.
 - `npm run check` = build + smoke.
 - Two players locally: open two browser windows, create two accounts (demo mode syncs tabs).
 

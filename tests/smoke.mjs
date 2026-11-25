@@ -4,10 +4,11 @@
 //
 // It checks: sign up, create each house type, wardrobe, every room renders,
 // build mode, AI room creation, every activity opens, two players see each other,
-// chat, and a Connect Four move syncs between players.
+// chat, a Connect Four move syncs between players, and invite links give the right role
+// (housemate link -> housemate, guest link -> guest), the owner can promote a guest, a member can leave, a friend request can be sent and accepted, and a friend can visit an opened house as a guest.
 
 import { chromium } from 'playwright';
-import { spawn } from 'node:child_process';
+import { spawn, execSync } from 'node:child_process';
 
 const PORT = 4179;
 const URL = `http://localhost:${PORT}/`;
@@ -15,8 +16,14 @@ const errors = [];
 let step = '';
 const log = (s) => { step = s; console.log('•', s); };
 
-const server = spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'ignore', shell: process.platform === 'win32' });
-await new Promise((r) => setTimeout(r, 2500));
+// Always test a DEMO copy of the game (Supabase keys blanked), so the robot can never
+// create accounts in the real database, even when .env.local exists.
+const demoEnv = { ...process.env, VITE_SUPABASE_URL: '', VITE_SUPABASE_ANON_KEY: '' };
+execSync('npx vite build --outDir dist-smoke --emptyOutDir', { stdio: 'ignore', env: demoEnv, shell: process.platform === 'win32' });
+const server = spawn('npx', ['vite', 'preview', '--outDir', 'dist-smoke', '--port', String(PORT), '--strictPort'], { stdio: 'ignore', env: demoEnv, shell: process.platform === 'win32' });
+for (let i = 0; i < 40; i++) { // wait up to ~20s for the server
+  try { await fetch(URL); break; } catch { await new Promise((r) => setTimeout(r, 500)); }
+}
 
 const browser = await chromium.launch({
   executablePath: process.env.CHROME_PATH || undefined,
@@ -106,6 +113,76 @@ try {
   await b.waitForTimeout(500);
   const redOnB = await b.locator('.c4-cell i.red').count();
   if (redOnB !== 1) throw new Error(`B sees ${redOnB} red discs, expected 1`);
+
+  log('invite links give the right role');
+  const roleB = await b.evaluate(() => window.__ourplace.store.get().role);
+  if (roleB !== 'housemate') throw new Error(`Housemate link gave role "${roleB}"`);
+  const guestCode = await a.evaluate(() => window.__ourplace.store.get().house.guestCode);
+  await b.close(); // fewer 3D pages open at once keeps the robot fast
+  const c = await ctx.newPage(); watch(c, 'C');
+  await c.goto(URL); await c.waitForTimeout(400);
+  await c.evaluate(() => { localStorage.setItem('op:session', 'null'); localStorage.removeItem('op:lastHouse'); });
+  await c.goto(`${URL}?join=${guestCode}`); await c.waitForTimeout(500);
+  await signUp(c, 'tester_c');
+  await c.waitForTimeout(1500);
+  if (await c.locator('text=Save look').count()) await c.click('text=Save look');
+  await c.waitForTimeout(500);
+  const roleC = await c.evaluate(() => window.__ourplace.store.get().role);
+  if (roleC !== 'guest') throw new Error(`Guest link gave role "${roleC}"`);
+
+  log('owner promotes the guest (People panel)');
+  const cId = await c.evaluate(() => window.__ourplace.store.get().me.id);
+  await a.evaluate(() => window.__ourplace.use('social.openPeople')());
+  await a.waitForTimeout(300);
+  await a.locator('.row', { hasText: 'tester_c' }).locator('button[title="Make housemate"]').click();
+  await a.locator('button', { hasText: /^Yes$/ }).click();
+  await a.waitForTimeout(800);
+  const promoted = await a.evaluate((id) => window.__ourplace.store.get().house.members[id]?.role, cId);
+  if (promoted !== 'housemate') throw new Error(`Promote left the role as "${promoted}"`);
+  await a.keyboard.press('Escape');
+
+  log('a member leaves the house');
+  await c.waitForTimeout(800); // C reloads after the promotion
+  await c.evaluate(() => window.__ourplace.use('social.openMenu')());
+  await c.waitForTimeout(300);
+  await c.click('text=Leave this house');
+  await c.locator('button', { hasText: /^Leave$/ }).click();
+  await a.waitForTimeout(1500);
+  const stillThere = await a.evaluate((id) => !!window.__ourplace.store.get().house.members[id], cId);
+  if (stillThere) throw new Error('Player C left but the owner still sees them as a member');
+
+  log('friends: send a request and accept it');
+  await a.evaluate(() => window.__ourplace.use('social.openFriends')());
+  await a.waitForTimeout(300);
+  await a.fill('input[placeholder="Friend\'s username"]', 'tester_c');
+  await a.click('text=Send request');
+  await a.waitForTimeout(600);
+  if (!(await a.locator('text=Waiting for an answer').count())) throw new Error('Sent request is not shown as waiting');
+  await a.keyboard.press('Escape');
+  // C left the house earlier, so C is on the house list, where Friends opens as a full page
+  await c.click('text=🤝 Friends');
+  await c.waitForTimeout(600);
+  await c.locator('button[title="Accept"]').click();
+  await c.waitForTimeout(600);
+  const friendsOfA = await a.evaluate(async () => (await window.__ourplace.backend.listFriends()).map((f) => `${f.username}:${f.status}`));
+  if (!friendsOfA.includes('tester_c:friend')) throw new Error(`A's friends are ${JSON.stringify(friendsOfA)}, expected tester_c:friend`);
+
+  log('visiting: owner opens the house, a friend visits as a guest');
+  const houseId = await a.evaluate(() => window.__ourplace.store.get().house.id);
+  await a.evaluate(() => window.__ourplace.use('social.openPeople')());
+  await a.waitForTimeout(300);
+  await a.click('text=Friends can visit');
+  await a.locator('button', { hasText: /^Turn on$/ }).click();
+  await a.waitForTimeout(600);
+  await a.keyboard.press('Escape');
+  await c.click('text=← Back'); // C is on the Friends page: go back and open it again to refresh the list
+  await c.waitForTimeout(500);
+  await c.click('text=🤝 Friends');
+  await c.waitForTimeout(700);
+  await c.locator('button', { hasText: /^Visit$/ }).click();
+  await c.waitForTimeout(1500);
+  const visit = await c.evaluate(() => { const s = window.__ourplace.store.get(); return { id: s.house?.id, role: s.role }; });
+  if (visit.id !== houseId || visit.role !== 'guest') throw new Error(`Visit gave house ${visit.id} as "${visit.role}", expected the friend's house as guest`);
 
   await a.screenshot({ path: 'tests/last-smoke.png' });
 } catch (e) {
