@@ -1,5 +1,6 @@
 // REAL-LIFE ACTIVITIES (owned by Activities): things that connect the game to life outside it.
 // gallery, calendar, wishlist, weather, movies, travel, links, notes, portal, chat, invite, nudge
+import './gallery.css';
 
 // replaceChildren that skips null/false (so conditional children don't print "null")
 const fill = (el, ...kids) => el.replaceChildren(...kids.flat().filter((k) => k != null && k !== false));
@@ -39,23 +40,122 @@ const WMO = { 0: '☀️', 1: '🌤️', 2: '⛅', 3: '☁️', 45: '🌫️', 4
 export const LIFE = {
   gallery: {
     title: 'Memory gallery', icon: '🖼️', wide: true,
-    open: (api) => sharedList(api, (photos, update) => {
+    // Day 2: every photo has a caption and the date it HAPPENED (not the upload day).
+    // Photos are grouped by month, tap one to see it big and edit or delete it,
+    // and an "On this day" card brings back memories from the same date in past years.
+    // Photos are still small JPEGs saved in the house state (max 30) until Storage is ready.
+    open: (api) => {
       const { h } = api;
+      let photos = [];
+      let draft = null;   // a photo picked but not added yet: { src }
+      let viewing = null; // id of the photo shown big
+      let editing = false;
+      const root = h('div', {});
+      const draw = () => fill(root, draft ? draftForm() : viewing ? bigView() : grid());
+      const update = async (fn) => { photos = fn([...photos]); draw(); await api.save(photos); };
+      api.load().then((v) => { photos = v || []; draw(); });
+      api.onRemote((v) => { photos = v || []; draw(); });
+
+      const MAX = 30;
+      const today = () => new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD in local time
+      const dayOf = (p) => p.date || new Date(p.at).toLocaleDateString('en-CA'); // old photos have no date
+      const pretty = (d) => new Date(d + 'T00:00:00').toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+      const monthName = (d) => new Date(d + 'T00:00:00').toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+      const canChange = (p) => p.by === api.me.id || api.canEdit;
+      const sorted = () => [...photos].sort((a, b) => dayOf(b).localeCompare(dayOf(a)) || b.at - a.at);
+      const captionInput = (value = '') => h('input', { placeholder: 'Caption, e.g. Our first trip to Porto', maxlength: 120, value });
+      const dateInput = (value) => h('input', { type: 'date', value, max: today() });
+
       const file = h('input', { type: 'file', accept: 'image/*', style: { display: 'none' }, onchange: async () => {
-        const f = file.files[0]; if (!f) return;
-        const src = await shrink(f);
-        const caption = (await api.ctx.ui.ask({ title: 'Add a caption', fields: [{ placeholder: 'e.g. Our first trip to Porto' }], ok: 'Add photo' }))?.[0] || '';
-        update((l) => [...l, { id: newId(), src, caption, by: api.me.id, at: Date.now() }].slice(-30));
-        api.award(5, 'shared a memory');
+        const f = file.files[0]; file.value = ''; if (!f) return;
+        try { draft = { src: await shrink(f) }; draw(); } catch { api.toast("That photo couldn't be opened"); }
       } });
-      return h('div', {},
-        h('div', { class: 'row-btns' }, file, h('button', { class: 'primary', onclick: () => file.click() }, '📷 Add a photo')),
-        photos.length ? h('div', { class: 'gallery' }, ...[...photos].reverse().map((p) => h('figure', {},
-          h('img', { src: p.src, loading: 'lazy' }),
-          h('figcaption', {}, p.caption || '', h('small', {}, ` · ${api.nameOf(p.by)}, ${new Date(p.at).toLocaleDateString()}`)),
-          p.by === api.me.id || api.canEdit ? h('button', { class: 'icon-btn', onclick: () => update((l) => l.filter((x) => x.id !== p.id)) }, '🗑') : null)))
-          : h('p', { class: 'muted' }, 'No memories yet. Add your first photo together!'));
-    }),
+
+      // Step 2 of adding: the picked photo with a caption and "when was this?"
+      function draftForm() {
+        const caption = captionInput();
+        const date = dateInput(today());
+        return h('div', { class: 'card form mg-form' },
+          h('img', { src: draft.src, class: 'mg-preview' }),
+          h('label', { class: 'field' }, h('span', {}, 'Caption'), caption),
+          h('label', { class: 'field' }, h('span', {}, 'When was this?'), date),
+          h('div', { class: 'row-btns' },
+            h('button', { onclick: () => { draft = null; draw(); } }, 'Cancel'),
+            h('button', { class: 'primary', onclick: () => {
+              const p = { id: newId(), src: draft.src, caption: caption.value.trim(), date: date.value || today(), by: api.me.id, at: Date.now() };
+              draft = null;
+              // keep the newest 30 uploads (photos live in the shared state for now)
+              update((l) => [...l, p].sort((a, b) => a.at - b.at).slice(-MAX));
+              api.award(5, 'shared a memory');
+            } }, 'Add memory')));
+      }
+
+      // One photo, big, with its story and Edit / Delete
+      function bigView() {
+        const p = photos.find((x) => x.id === viewing);
+        if (!p) { viewing = null; editing = false; return grid(); } // deleted by someone else
+        const back = h('button', { onclick: () => { viewing = null; editing = false; draw(); } }, '← All memories');
+        if (editing) {
+          const caption = captionInput(p.caption || '');
+          const date = dateInput(dayOf(p));
+          return h('div', {}, back, h('div', { class: 'card form mg-form' },
+            h('img', { src: p.src, class: 'mg-preview' }),
+            h('label', { class: 'field' }, h('span', {}, 'Caption'), caption),
+            h('label', { class: 'field' }, h('span', {}, 'When was this?'), date),
+            h('div', { class: 'row-btns' },
+              h('button', { onclick: () => { editing = false; draw(); } }, 'Cancel'),
+              h('button', { class: 'primary', onclick: () => { editing = false; update((l) => l.map((x) => (x.id === p.id ? { ...x, caption: caption.value.trim(), date: date.value || dayOf(x) } : x))); } }, 'Save'))));
+        }
+        return h('div', {}, back,
+          h('figure', { class: 'mg-big' },
+            h('img', { src: p.src }),
+            h('figcaption', {}, p.caption ? h('h3', {}, p.caption) : null,
+              h('div', { class: 'muted' }, `📅 ${pretty(dayOf(p))} · added by ${api.nameOf(p.by)}`))),
+          canChange(p) ? h('div', { class: 'row-btns' },
+            h('button', { onclick: () => { editing = true; draw(); } }, '✏️ Edit'),
+            h('button', { onclick: async () => {
+              if (!(await api.ctx.ui.confirm('Delete this memory?', 'It disappears for everyone in the house.', 'Delete'))) return;
+              viewing = null; update((l) => l.filter((x) => x.id !== p.id));
+            } }, '🗑 Delete')) : null);
+      }
+
+      // A small square that opens the big view
+      const tile = (p) => h('figure', { class: 'mg-tile', role: 'button', tabindex: 0, onclick: () => { viewing = p.id; draw(); } },
+        h('img', { src: p.src, loading: 'lazy' }),
+        h('figcaption', {}, p.caption || '', h('small', {}, pretty(dayOf(p)))));
+
+      // All photos, newest memory first, one heading per month
+      function grid() {
+        const list = sorted();
+        const t = today();
+        const onThisDay = list.filter((p) => dayOf(p).slice(5) === t.slice(5) && dayOf(p) < t);
+        const months = [];
+        for (const p of list) {
+          const m = dayOf(p).slice(0, 7);
+          if (months[months.length - 1]?.m !== m) months.push({ m, items: [] });
+          months[months.length - 1].items.push(p);
+        }
+        return h('div', {},
+          h('div', { class: 'row-btns' }, file,
+            h('button', { class: 'primary', onclick: () => file.click() }, '📷 Add a memory'),
+            photos.length ? h('span', { class: 'muted small mg-count' }, `${photos.length} of ${MAX} photos`) : null),
+          onThisDay.length ? h('div', { class: 'card mg-otd' },
+            h('h4', {}, '✨ On this day'),
+            ...onThisDay.map((p) => {
+              const years = Number(t.slice(0, 4)) - Number(dayOf(p).slice(0, 4));
+              return h('div', { class: 'row', role: 'button', onclick: () => { viewing = p.id; draw(); } },
+                h('img', { src: p.src, class: 'thumb' }),
+                h('span', { class: 'row-main' }, p.caption || 'A memory', h('small', {}, `${years} year${years === 1 ? '' : 's'} ago today`)));
+            })) : null,
+          ...months.map(({ m, items }) => h('section', {},
+            h('h4', { class: 'mg-month' }, monthName(m + '-01')),
+            h('div', { class: 'gallery' }, ...items.map(tile)))),
+          !photos.length ? h('p', { class: 'muted' }, 'No memories yet. Add your first photo together!') : null);
+      }
+
+      draw();
+      return root;
+    },
   },
 
   calendar: {
